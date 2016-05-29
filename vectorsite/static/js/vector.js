@@ -1,127 +1,107 @@
-CONNECTION_URL = "/vectorsite/api/ui/connection/"
-MESSAGES_URL = "/vectorsite/api/ui/messages/"
-SELF = ""
-CONNECTED = false
-DEBUG = true
-CURRENT = 0
-
-TIMER = ""
-
-var APP_JSON = 'application/json'
-
+// Mouse movement
 var startX, startY, endX, endY
-
 $('#whiteboard').mousedown(function(e){
   startX = e.pageX - this.offsetLeft;
   startY = e.pageY - this.offsetTop;
 });
-
 $('#whiteboard').mouseup(function(e){
   endX = e.pageX - this.offsetLeft;
   endY = e.pageY - this.offsetTop;
-  sendMessage('line', {'start':{'x':startX, 'y':startY},'end':{'x':endX, 'y':endY}})
+  newMessage('line', {'start':{'x':startX, 'y':startY},'end':{'x':endX, 'y':endY}})
 });
 
+// Send message through socket
+function newMessage(method, message) {
+    msg = {"method": method, "message": message}
+    messenger.socket.send(JSON.stringify(msg))
+}
 
+// Socket initialization
+var messenger = {
+    socket: null,
 
+    start: function() {
+        var url = "ws://" + location.host + "/vectorsocket";
+        messenger.socket = new WebSocket(url);
+        messenger.socket.onmessage = function(event) {
+            messenger.handleMessage(JSON.parse(event.data));
+        }
+    },
+
+    // handle incoming messages
+    handleMessage: function(message) {
+        console.debug(message)
+        switch (message.method) {
+            case "connected":
+                $("#messages").append("<p>Node connected " + message.message)
+                $("#connection-button").html("Disconnect")
+                break
+            case "disconnected":
+                $("#messages").append("<p>Node disconnected " + message.message)
+                $("#connection-button").html("Connect")
+                break
+            case "line":
+                start = {'x': message.message.start.x, 'y': message.message.start.y}
+                end = {'x': message.message.end.x, 'y': message.message.end.y}
+                newLine(start, end)
+                break
+            case "clean":
+                clearScreen(message.message.x, message.message.y)
+                break
+        }
+    }
+}
+
+// Clear drawing
+function clearScreen(width, height) {
+    console.debug("Cleaning screen")
+    var context = $('#whiteboard')[0].getContext('2d');
+    var canvas = $('#whiteboard')
+    context.clearRect(0, 0, canvas.width(), canvas.height());
+    canvas.width = width
+    canvas.height = height
+}
+
+// handle connect button press
 function connect () {
-  var apiurl = SELF + CONNECTION_URL
-  var body = {'host': $('#address').val()}
-  $.ajax({
-    url: apiurl,
-    type: 'GET',
-    data: body
-  }).done(function (data, textStatus, jqXHR) {
-    if (DEBUG) {
-      console.log('RECEIVED RESPONSE: data:', data, ' textStatus:', textStatus)
-    }
-    $('#connection-button').html("Disconnect")
-      CONNECTED = true
-      TIMER = setInterval(getMessages, 5000)
-  }).fail(function (jqXHR, textStatus, errorThrown) {
-    if (DEBUG) {
-      console.log('RECEIVED ERROR: textStatus:', textStatus, 'error:', errorThrown)
-    }
-  })
+  address = $('#address').val()
+  method = "connect"
+  newMessage(method, address)
 }
 
+// handle disconnect button press
 function disconnect () {
-  var apiurl = SELF + CONNECTION_URL
-  $.ajax({
-    url: apiurl,
-    type: 'POST'
-  }).done(function (data, textStatus, jqXHR) {
-    if (DEBUG) {
-      console.log('RECEIVED RESPONSE: data:', data, ' textStatus:', textStatus)
-    }
-    $('#connection-button').html("Connect")
-      CONNECTED = false
-      clearInterval(TIMER)
-  }).fail(function (jqXHR, textStatus, errorThrown) {
-    if (DEBUG) {
-      console.log('RECEIVED ERROR: textStatus:', textStatus, 'error:', errorThrown)
-    }
-  })
+  method = "disconnect";
+  newMessage(method)
 }
 
-function getMessages() {
-    var apiurl = SELF + MESSAGES_URL
-      $.ajax({
-    url: apiurl,
-    type: 'GET',
-          data: {'from_id':CURRENT}
-  }).done(function (data, textStatus, jqXHR) {
-          if (DEBUG) {
-              console.log('RECEIVED RESPONSE: data:', data, ' textStatus:', textStatus)
-          }
-          var message = ""
-          for (message in data) {
-              if (data[message].method == 'line') {
-                  console.debug("New line")
-                  var context = $('#whiteboard')[0].getContext('2d');
+// handle clean button press
+function clean() {
+  method = "clean"
+    message = {'x': $('#whiteboard').width(), 'y': $('#whiteboard').height()}
+    newMessage(method, message)
+}
 
+// draw new line
+function newLine(start, end) {
+    var context = $('#whiteboard')[0].getContext('2d');
       context.beginPath();
-      context.moveTo(data[message]['message']['start']['x'], data[message]['message']['start']['y']);
-      context.lineTo(data[message]['message']['end']['x'], data[message]['message']['end']['y']);
+      context.moveTo(start.x, start.y);
+      context.lineTo(end.x, end.y);
       context.stroke();
-              }
-              else if (data[message].method == 'control') {
-                  $('#messages').append('<p>' + data[message].message + '</p>')
-              }
-          }
-          if (Number(message) > 0 ) CURRENT = Number(message) + 1
-  }).fail(function (jqXHR, textStatus, errorThrown) {
-    if (DEBUG) {
-      console.log('RECEIVED ERROR: textStatus:', textStatus, 'error:', errorThrown)
-    }
-  })
 }
 
-function sendMessage(method, message) {
-    var apiurl = SELF + MESSAGES_URL
-      $.ajax({
-    url: apiurl,
-    type: 'POST',
-          data: JSON.stringify({'method':method, 'message': message}),
-          contentType: APP_JSON,
-  }).done(function (data, textStatus, jqXHR) {
-          if (DEBUG) {
-              console.log('RECEIVED RESPONSE: data:', data, ' textStatus:', textStatus)
-          }
-  }).fail(function (jqXHR, textStatus, errorThrown) {
-    if (DEBUG) {
-      console.log('RECEIVED ERROR: textStatus:', textStatus, 'error:', errorThrown)
-    }
-  })
-}
 
 $(function () {
-    SELF = location.origin
+    messenger.start();
     $('#connection-button').on('click', function () {
-        if (!CONNECTED) {
+        if ($('#connection-button').html() === "Connect") {
             connect()
         } else {
             disconnect()
         }
+    })
+    $('#clear-button').on('click', function () {
+        clean()
     })
 })

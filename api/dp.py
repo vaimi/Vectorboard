@@ -1,31 +1,67 @@
-from flask import Flask, request, Response, g, jsonify, _request_ctx_stack, redirect
-from flask.ext.restful import Resource, Api, abort
+# For Rest API
+from flask import Flask, request
+from flask.ext.restful import Resource, Api
 from flask.ext.cors import CORS
-import threading
-import requests as ring
-import time, sys
-import socket
-import json
 
+# For Websocket
+import tornado.escape
+import tornado.ioloop
+import tornado.options
+import tornado.web
+import tornado.websocket
+import os.path
+
+# Threading
+import threading, thread
+
+# Heartbeat
+import time
+
+# System tools (exit)
+import sys
+
+# Node class
 from node import Node
 
-import abc
+# Command line arguments
 import argparse
+
+# Logging
 import logging
 
-server = Flask(__name__)
-api = Api(server)
+# Host detection.
+import socket
 
-class Server(threading.Thread):
+# Random generation
+import random
+import string
+
+# Time between heartbeats
+HEARTBEAT_INTERVAL = 5
+# Amount of time allowed to miss
+HEARTBEAT_TOLERANCE = 11
+
+# Rest api
+rest_server = Flask(__name__)
+api = Api(rest_server)
+
+# The threading approach and architecture is influenced https://github.com/mishunika/MIE-DSV/
+class Rest(threading.Thread):
+    """
+    Thread for Rest API
+    """
     def __init__(self):
         threading.Thread.__init__(self)
 
     def run(self):
-        """server.run(port=node.port)
-        CORS(server)"""
+        rest_server.run(port=node.port)
+        CORS(rest_server)
 
 
-class Tasker(threading.Thread):
+class QueueHandler(threading.Thread):
+    """
+    Thread for outward message sending
+    """
     def __init__(self):
         threading.Thread.__init__(self)
 
@@ -37,40 +73,86 @@ class Tasker(threading.Thread):
                 getattr(node, task['method'])(*task['args'])
             node.queue.task_done()
 
-class DistributionConnection(Resource):
-    def get(self):
-        node.set_host("http://" + request.host)
 
+class Heartbeat(threading.Thread):
+    """
+    Thread for heartbeat
+    """
+    def __init__(self):
+        threading.Thread.__init__(self)
+
+    def run(self):
+        global node
+        while True:
+            if node.get_follower() is None:
+                continue
+            node.heartbeat()
+            # Make sure we get heartbeats from previous host
+            if node.last_heartbeat is None:
+                node.last_heartbeat = int(time.time())
+            if int(time.time()) - node.last_heartbeat > HEARTBEAT_TOLERANCE:
+                node.panic(node.host)
+
+            time.sleep(HEARTBEAT_INTERVAL)
+
+
+class DistributionConnection(Resource):
+    """
+    Connection resource for ring API. Offers functions to join and leave the ring.
+    """
+    def get(self):
+        """
+        Join the ring
+        :return: int 400 if malformed request, or 200 with {host: node_old_follower_address}.
+        """
+
+        # Check that the message is not malformed
         host = request.args.get('host')
         if host == '' or host is None:
             return '', 400
-        if node.get_follower() is None:
-            node.set_follower(host)
-            node.queue.put({'method': 'propagate_message', 'args': ({'method': 'control', 'message': host + ' joins.'},)})
-        logging.info(host + " is trying to the ring")
-        return '', 200
+
+        # Get old follower
+        old_follower = node.get_follower()
+        # For initial ring creation
+        if old_follower is None:
+            old_follower = node.host
+        # Set joining host as follower
+        node.set_follower(host)
+
+        # Send connection message to websocket
+        msg = {"method": "connected", "message": node.get_follower()}
+        VectorSocketHandler.update_cache(msg)
+        VectorSocketHandler.send_updates(msg)
+
+        logging.info("API: %s is being merged to ring", host)
+
+        return {'host': old_follower}, 200
 
     def post(self):
-        node.set_host("http://" + request.host)
+        """
+        leave the ring. Requires json message {'host':leaving host, 'new_host': replacing host}
+        :return: 400 if malformed request. 200 on success.
+        """
+        data = request.json
+        leaving_host = data['host']
+        replacing_host = data['new_host']
+        if leaving_host is None or replacing_host is None:
+            return '', 400
 
-        dataDict = request.json
-        target = dataDict['host']
-        new_target = dataDict['new_host']
-        logging.info(target + " wants to leave")
-        if node.host == target:
-            logging.info("I'm the host leaving, I'm ready to quit")
+        logging.info("API: %s wants to leave", leaving_host)
+        if node.host == leaving_host: # Message gone already through the ring
+            logging.info("API: Message gone through the ring. Ready to leave.")
             return '', 200
-        elif node.get_follower() != target and new_target != '':
-            logging.info("I don't know who that is, propagating.")
-            node.queue.put({'method': 'disconnect', 'args': (target, new_target)})
+        elif node.get_follower() != leaving_host: # Someone on the middle of the ring
+            logging.info("API:Unknown node, propagating.")
+            node.queue.put({'method': 'disconnect', 'args': (leaving_host, replacing_host)})
             return '', 200
-        elif node.get_follower() == target:
-            logging.info("Oh, so sad. Chancing follower to " + new_target)
-            if new_target != node.host:
-                node.queue.put({'method': 'disconnect', 'args': (target, '')})
-                node.set_follower(new_target)
-                node.queue.put(
-                    {'method': 'propagate_message', 'args': ({'method': 'control', 'message': target + ' leaves.'},)})
+        elif node.get_follower() == leaving_host: # Node that lost it's follower.
+            logging.info("API: Follower left. Chancing follower to %s", replacing_host)
+            if replacing_host != node.host: # If we are still a ring
+                node.queue.put({'method': 'disconnect', 'args': (leaving_host, replacing_host)})
+                node.set_follower(replacing_host)
+                node.queue.put({'method': 'propagate_message', 'args': ({'method': 'control', 'message': leaving_host + ' leaves.'},)})
                 node.queue.put({'method': 'leader_election', 'args': ("election", 0)})
             else:
                 node.set_follower(None)
@@ -78,168 +160,251 @@ class DistributionConnection(Resource):
         else:
             return '', 200
 
+
 class DistributionMessages(Resource):
+    """
+    Message resources. Client can request and send messages through the channel.
+    """
 
     def get(self):
-        node.set_host("http://" + request.host)
-        host = request.remote_addr
-        logging.info(node.leader + " is requesting messages")
-        return '', 200
+        """
+        Request messages in the channel
+        :return: dict in Node and 200
+        """
+        return node.messages, 200
 
     def post(self):
-        node.set_host("http://" + request.host)
-        dataDict = request.json
-        host = request.remote_addr
-        logging.info(host + " is trying to propagate an message")
-        command = dataDict['method']
-        if command == "election" or command == "elected":
-            node.queue.put({'method': 'leader_election', 'args': (command, dataDict['vote'])})
-        elif command == "propagate":
-            node.queue.put({'method': 'propagate_message', 'args': (dataDict["message"],)})
-        elif command == "persistent":
+        """
+        Send messages through the channel. Format is always {'method':some_method, 'message':some message}. Message
+        can be also another dictionary if required
+        :return: 200 on success, 400 on malformed request
+        """
+
+        data = request.json
+        command = data['method']
+        message = data['message']
+        if command is None or message is None:
+            return '', 400
+        if command == "election" or command == "elected":  # {'method':'election' or 'elected', 'message': UID}
+            node.queue.put({'method': 'leader_election', 'args': (command, message)})
+        elif command == "propagate":  # {'method':'propagate', 'message': message}
+            node.queue.put({'method': 'propagate_message', 'args': (message,)})
+        elif command == "persistent": # {'method':'persistent', 'message': message}
+            if "method" in message:
+                if message["method"] == "clean":  # {'method':'persistent', 'message':
+                    # 'id': 23, method':'clean', 'message': {'x': 500, 'y': 500}}
+                    node.messages = None
+            VectorSocketHandler.update_cache(message['message'])
+            VectorSocketHandler.send_updates(message['message'])
             if not node.is_leader():
-                node.queue.put({'method': 'persist_message', 'args': (dataDict["message"], dataDict["id"])})
-        return '', 200
-
-class UIConnection(Resource):
-    def get(self):
-        node.set_host("http://" + request.host)
-        target = request.args.get('host')
-        if target == '' or target == None:
-            return '', 400
-        response = node.connect(target)
-        if response == 200:
-            node.set_follower(target)
-            node.queue.put({'method': 'leader_election', 'args': ("election", 0)})
-            return '', response
+                node.queue.put({'method': 'persist_message', 'args': (message["message"], message["id"])})
         else:
-            return '', 404
-
-    def post(self):
-        node.set_host("http://" + request.host)
-        if node.follower is None:
-            logging.warning("You are not in a ring. You should connect first.")
-            return '', 400
-        node.disconnect(node.host, node.get_follower())
-        logging.info("Ready to exit, cleanly disconnected from hosts")
+            logging.warning("API: Unknown message: %r", data)
         return '', 200
 
-class UIMessages(Resource):
-    def get(self):
-        node.set_host("http://" + request.host)
-        from_id = request.args.get("from_id")
-        if from_id is None:
-            from_id = 0
-        messages = {k: v for (k, v) in node.messages.items() if int(k) >= int(from_id)}
-        logging.info(node.host + " is requesting messages")
-        return messages, 200
+class DistributionHeartbeat(Resource):
+    """
+    Heartbeat resource. When in ring, node has to get update from previous node inside HEARTBEAT_TOLERANCE.
+    If it's not getting updates, it will panic.
+    """
     def post(self):
-        node.set_host("http://" + request.host)
-        dataDict = request.json
-        method = dataDict['method']
-        message = dataDict['message']
-        messageDict = {'method': method, 'message': message}
-        logging.info(node.host + " is trying to send an message")
-        node.queue.put({'method': 'propagate_message', 'args': (messageDict, )})
-        return '',200
+        """
+        listen heartbeats. If host is set, ring is already panicking.
+        :return: 200 on success.
+        """
+        data = request.json
+        if data is not None:
+            if "host" in data:
+                node.panic(data['host'])
+        else:
+            node.last_heartbeat = int(time.time())
+        return '', 200
 
-class UIMessage(Resource):
+# Declare API resources
+api.add_resource(DistributionConnection, '/api/connection/',
+                 endpoint='connection')
+api.add_resource(DistributionMessages, '/api/messages/',
+                    endpoint='messages')
+api.add_resource(DistributionHeartbeat, '/api/heartbeat/',
+                 endpoint="heartbeat")
+
+
+# The tornado architecture is influenced by https://github.com/tornadoweb/tornado/tree/master/demos/chat
+class Vectors(tornado.web.Application):
+    """
+    Main Tornado app. Sets settings ready for other parts.
+    """
+    def __init__(self):
+        handlers = [
+            (r"/", MainHandler),
+            (r"/vectorsocket", VectorSocketHandler),
+        ]
+
+        settings = dict(
+            cookie_secret=''.join(random.SystemRandom().choice(string.ascii_uppercase + string.digits) for _ in range(32)),
+            template_path=os.path.join(os.path.dirname(__file__), "../vectorsite/templates"),
+            static_path=os.path.join(os.path.dirname(__file__), "../vectorsite/static"),
+            xsrf_cookies=True,
+        )
+        super(Vectors, self).__init__(handlers, **settings)
+
+
+class MainHandler(tornado.web.RequestHandler):
     def get(self):
-        from_id = request.args.get('from_id')
-        node.set_host("http://" + request.host)
-        if from_id is None:
-            from_id = 0
-        messages = {k: v for (k, v) in node.messages.items() if int(k) >= int(from_id)}
-        logging.info(node.host + " is requesting messages")
-        return jsonify(messages), 200
+        """
+        Return main page
+        :return: main page in html
+        """
+        self.render("index.html", messages=VectorSocketHandler.cache)
 
 
-'''
-UI functions:
+class VectorSocketHandler(tornado.websocket.WebSocketHandler):
+    """
+    Vector websocket. Handles messaging between node and client.
+    """
+    waiters = set()
+    cache = []
+    cache_size = 100
 
-Resources:
-Line
-Canvas
-Connection
+    def get_compression_options(self):
+        # Non-None enables compression with default options.
+        return {}
 
-Functions:
+    def open(self):
+        """
+        On client join.
+        :return:
+        """
+        VectorSocketHandler.waiters.add(self)
 
-/line
-add_line(point x, point y)
-/line/x
-get_line_status()
+        # Send update about connection status
+        if (node.get_follower() is not None):
+            msg = {"method": "connected", "message": node.get_follower()}
+            self.write_message(msg)
 
-/canvas
-new_canvas(size x, size y)
-get_canvas()
+        # Write old messages
+        for key, value in node.messages.iteritems():
+            self.write_message({'method':value['method'], 'message':value['message']})
 
-/connect
-disconnect()
-connect()
+    def on_close(self):
+        VectorSocketHandler.waiters.remove(self)
 
-RING:
+    @classmethod
+    def update_cache(cls, chat):
+        cls.cache.append(chat)
+        if len(cls.cache) > cls.cache_size:
+            cls.cache = cls.cache[-cls.cache_size:]
 
-Resources:
+    @classmethod
+    def send_updates(cls, message):
+        """
+        Send updates to all node clients.
+        :param message: message to be sent
+        :return:
+        """
+        logging.info("WS: Sending message to %d waiters", len(cls.waiters))
+        for waiter in cls.waiters:
+            try:
+                waiter.write_message(message)
+            except:
+                logging.error("WS: Error sending message", exc_info=True)
 
-Message
-Connection
-Heartbeat
-Leader
+    def on_message(self, json_message):
+        """
+        On message from the clients.
+        :param json_message: json message grom the client.
+        :return:
+        """
+        logging.info("WS: Got message %r", json_message)
+        parsed = tornado.escape.json_decode(json_message)
+        method = parsed['method']
 
-Functions:
+        if method == "line":
+            message = {
+                "message": parsed["message"],
+                "method": "line"
+            }
+            node.queue.put({'method': 'propagate_message', 'args': (message, )})
 
-message
-send_message()
-persist_message()
-message/x
-get_message_status()
+        elif method == "clean":
+            message = {
+                "message": parsed["message"],
+                "method": "clean"
+            }
+            node.queue.put({'method': 'propagate_message', 'args': (message, )})
 
-connection
-add_to_ring()
-remove_from_ring()
+        elif method == "connect":
+            target = parsed["message"]
+            if target is None:
+                return
+            success = node.connect(target)
+            if success:
+                # Clean up the whiteboard
+                msg = {"method": "clean", "message": {'x':500, 'y':500}}
+                VectorSocketHandler.update_cache(msg)
+                VectorSocketHandler.send_updates(msg)
 
-heartbeat
-listen_heartbeat()
-panic()
+                # Send connection message to node clients.
+                msg = {"method": "connected", "message": node.get_follower()}
+                VectorSocketHandler.update_cache(msg)
+                VectorSocketHandler.send_updates(msg)
 
-leader
-suggest_leader()
-'''
+                # get messages from node follower
+                node.request_messages()
 
-tasker = Tasker()
-apiThread = Server()
-api.add_resource(DistributionConnection, '/vectorsite/api/distribution/connection/',
-                 endpoint='d_connection')
-api.add_resource(DistributionMessages, '/vectorsite/api/distribution/messages/',
-                    endpoint='d_messages')
-api.add_resource(UIConnection, '/vectorsite/api/ui/connection/',
-                    endpoint='ui_connection')
-api.add_resource(UIMessages, '/vectorsite/api/ui/messages/',
-                    endpoint='ui_messages')
+                for key, value in node.messages.iteritems():
+                    VectorSocketHandler.update_cache(value)
+                    VectorSocketHandler.send_updates(value)
+                # Elect new leader
+                node.queue.put({'method': 'leader_election', 'args': ("election", 0)})
 
-parser = argparse.ArgumentParser(description='Distributed whiteboard.')
-parser.add_argument('-p', '--port', type=int, default=5000,
-                    help='Port used for rest api')
-args = parser.parse_args()
+        elif method == "disconnect":
+            response = node.disconnect(node.host, node.get_follower())
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-
-node = Node(port=args.port)
-
-tasker.daemon = True
-tasker.start()
-
-apiThread.daemon = True
-apiThread.start()
-
+            # Message followers
+            msg = {"method": "disconnected", "message": node.get_follower()}
+            VectorSocketHandler.update_cache(msg)
+            VectorSocketHandler.send_updates(msg)
+            node.reset_node()
+        else:
+            return
 
 
 if __name__ == '__main__':
-    server.run(port=node.port)
-    CORS(server)
-    while True:
-        try:
-            time.sleep(1)
-        except KeyboardInterrupt:
-            node.disconnect(node.host, node.get_follower())
-            sys.exit()
+    # Command line arguments
+    parser = argparse.ArgumentParser(description='Distributed whiteboard.')
+    parser.add_argument('-rp', '--restport', type=int, default=5000,
+                        help='Port used for rest api')
+    parser.add_argument('-sp', '--socketport', type=int, default=5001,
+                        help='Port used for websocket')
+    parser.add_argument('--host', default='http://' + socket.gethostbyname(socket.gethostname()),
+                        help='Set hostname')
+
+    args = parser.parse_args()
+
+    # Logging settings
+    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
+    node = Node(host=args.host + ":" + str(args.restport), port=args.restport)
+
+    # Setup threading
+    handler = QueueHandler()
+    apiThread = Rest()
+    heartbeat = Heartbeat()
+
+    handler.daemon = True
+    handler.start()
+    heartbeat.daemon = True
+    heartbeat.start()
+    apiThread.daemon = True
+    apiThread.start()
+
+    # Setup Tornado
+    app = Vectors()
+    app.listen(args.socketport)
+    try:
+        tornado.ioloop.IOLoop.current().start()
+    except KeyboardInterrupt:
+        node.disconnect(node.host, node.get_follower())
+        sys.exit()
+
