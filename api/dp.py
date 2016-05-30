@@ -10,6 +10,7 @@ import tornado.options
 import tornado.web
 import tornado.websocket
 import os.path
+import os
 
 # Threading
 import threading, thread
@@ -71,7 +72,11 @@ class QueueHandler(threading.Thread):
             task = node.queue.get()
             if task['method']:
                 getattr(node, task['method'])(*task['args'])
-            node.queue.task_done()
+            try:
+                node.queue.task_done()
+            except ValueError:
+                continue
+
 
 
 class Heartbeat(threading.Thread):
@@ -125,7 +130,6 @@ class DistributionConnection(Resource):
         VectorSocketHandler.send_updates(msg)
 
         logging.info("API: %s is being merged to ring", host)
-
         return {'host': old_follower}, 200
 
     def post(self):
@@ -142,6 +146,11 @@ class DistributionConnection(Resource):
         logging.info("API: %s wants to leave", leaving_host)
         if node.host == leaving_host: # Message gone already through the ring
             logging.info("API: Message gone through the ring. Ready to leave.")
+            msg = {'method':'disconnected', 'message':node.get_follower()}
+            VectorSocketHandler.update_cache(msg)
+            VectorSocketHandler.send_updates(msg)
+            node.reset_node()
+
             return '', 200
         elif node.get_follower() != leaving_host: # Someone on the middle of the ring
             logging.info("API:Unknown node, propagating.")
@@ -151,8 +160,9 @@ class DistributionConnection(Resource):
             logging.info("API: Follower left. Chancing follower to %s", replacing_host)
             if replacing_host != node.host: # If we are still a ring
                 node.queue.put({'method': 'disconnect', 'args': (leaving_host, replacing_host)})
+                node.propagate_message({'method': 'control', 'message': leaving_host + ' leaves.'})
                 node.set_follower(replacing_host)
-                node.queue.put({'method': 'propagate_message', 'args': ({'method': 'control', 'message': leaving_host + ' leaves.'},)})
+                node.leader_election("election", 0)
                 node.queue.put({'method': 'leader_election', 'args': ("election", 0)})
             else:
                 node.set_follower(None)
@@ -183,6 +193,7 @@ class DistributionMessages(Resource):
         data = request.json
         command = data['method']
         message = data['message']
+        logging.debug("API: Received message %r", data)
         if command is None or message is None:
             return '', 400
         if command == "election" or command == "elected":  # {'method':'election' or 'elected', 'message': UID}
@@ -193,7 +204,7 @@ class DistributionMessages(Resource):
             if "method" in message:
                 if message["method"] == "clean":  # {'method':'persistent', 'message':
                     # 'id': 23, method':'clean', 'message': {'x': 500, 'y': 500}}
-                    node.messages = None
+                    node.messages.clean()
             VectorSocketHandler.update_cache(message['message'])
             VectorSocketHandler.send_updates(message['message'])
             if not node.is_leader():
@@ -265,6 +276,7 @@ class VectorSocketHandler(tornado.websocket.WebSocketHandler):
     waiters = set()
     cache = []
     cache_size = 100
+    global node
 
     def get_compression_options(self):
         # Non-None enables compression with default options.
@@ -363,9 +375,6 @@ class VectorSocketHandler(tornado.websocket.WebSocketHandler):
 
             # Message followers
             msg = {"method": "disconnected", "message": node.get_follower()}
-            VectorSocketHandler.update_cache(msg)
-            VectorSocketHandler.send_updates(msg)
-            node.reset_node()
         else:
             return
 
