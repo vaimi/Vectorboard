@@ -291,6 +291,7 @@ class Node(object):
             return True
         except ring.exceptions.ConnectionError or ring.exceptions.ReadTimeout:
             self.set_follower(host)
+            self.leader_election("election", 0)
             return True
 
     def is_connected(self, leaderless=False):
