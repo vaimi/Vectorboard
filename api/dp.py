@@ -55,7 +55,7 @@ class Rest(threading.Thread):
         threading.Thread.__init__(self)
 
     def run(self):
-        rest_server.run(port=node.port)
+        rest_server.run(host=node.host, port=node.port)
         CORS(rest_server)
 
 
@@ -407,6 +407,7 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
     node = Node(host=args.host + ":" + str(args.restport), port=args.restport)
+    logging.info("The client is hosted on %s", node.host)
 
     # Setup threading
     handler = QueueHandler()
