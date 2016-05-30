@@ -55,12 +55,13 @@ class Rest(threading.Thread):
         threading.Thread.__init__(self)
 
     def run(self):
-    	if node.secure:
-    		context = (os.path.join(os.path.dirname(__file__), "../cert.crt"), os.path.join(os.path.dirname(__file__), "../key.key"))
-    		rest_server.run(threaded=True, host='0.0.0.0', port=node.port, ssl_context=context)
-    	else:
-        	rest_server.run(threaded=True, host='0.0.0.0', port=node.port)
-        CORS(rest_server)
+    	while True:
+	    	if node.secure:
+	    		context = (os.path.join(os.path.dirname(__file__), "../cert.crt"), os.path.join(os.path.dirname(__file__), "../key.key"))
+	    		rest_server.run(host='0.0.0.0', port=node.port, ssl_context=context)
+	    	else:
+	        	rest_server.run(host='0.0.0.0', port=node.port)
+	        CORS(rest_server)
 
 
 class QueueHandler(threading.Thread):
