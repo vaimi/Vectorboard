@@ -379,6 +379,18 @@ class VectorSocketHandler(tornado.websocket.WebSocketHandler):
             return
 
 
+# http://stackoverflow.com/questions/166506/finding-local-ip-addresses-using-pythons-stdlib/166520#166520
+def get_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('8.8.8.8', 0))
+        IP = s.getsockname()[0]
+    except:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
+
 if __name__ == '__main__':
     # Command line arguments
     parser = argparse.ArgumentParser(description='Distributed whiteboard.')
@@ -386,7 +398,7 @@ if __name__ == '__main__':
                         help='Port used for rest api')
     parser.add_argument('-sp', '--socketport', type=int, default=5001,
                         help='Port used for websocket')
-    parser.add_argument('--host', default='http://' + socket.gethostbyname(socket.gethostname()),
+    parser.add_argument('--host', default='http://' + get_ip(),
                         help='Set hostname')
 
     args = parser.parse_args()
