@@ -55,7 +55,11 @@ class Rest(threading.Thread):
         threading.Thread.__init__(self)
 
     def run(self):
-        rest_server.run(host='0.0.0.0', port=node.port)
+    	if node.secure:
+    		context = (os.path.join(os.path.dirname(__file__), "../cert.crt"), os.path.join(os.path.dirname(__file__), "../key.key"))
+    		rest_server.run(host='0.0.0.0', port=node.port, ssl_context=context)
+    	else:
+        	rest_server.run(host='0.0.0.0', port=node.port)
         CORS(rest_server)
 
 
@@ -398,15 +402,22 @@ if __name__ == '__main__':
                         help='Port used for rest api')
     parser.add_argument('-sp', '--socketport', type=int, default=5001,
                         help='Port used for websocket')
-    parser.add_argument('--host', default='http://' + get_ip(),
+    parser.add_argument('--host', default=get_ip(),
                         help='Set hostname')
+    parser.add_argument('--ssl', action="store_true")
 
     args = parser.parse_args()
 
     # Logging settings
     logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    node = Node(host=args.host + ":" + str(args.restport), port=args.restport)
+    prefix = ""
+    if args.ssl:
+    	prefix = 'https://'
+    else:
+    	prefix = 'http://'
+    node = Node(host=prefix + args.host + ":" + str(args.restport), port=args.restport)
+    node.secure = args.ssl
     logging.info("The client is hosted on %s:%s", args.host, args.socketport)
 
     # Setup threading
@@ -423,7 +434,13 @@ if __name__ == '__main__':
 
     # Setup Tornado
     app = Vectors()
-    app.listen(args.socketport)
+    if node.secure:
+    	app.listen(args.socketport, ssl_options={
+    			"certfile": os.path.join(os.path.dirname(__file__), "../cert.crt"),
+    			"keyfile": os.path.join(os.path.dirname(__file__), "../key.key")
+    		})
+    else:
+    	app.listen(args.socketport)
     try:
         tornado.ioloop.IOLoop.current().start()
     except KeyboardInterrupt:

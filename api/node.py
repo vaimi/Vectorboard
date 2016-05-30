@@ -10,6 +10,7 @@ class Node(object):
         """
         self.queue = Queue(10) # Outward message queue
         self.messages = {} # Message log
+        self.secure = False
 
         self.follower = None # Follower address
         self.host = host # Own address

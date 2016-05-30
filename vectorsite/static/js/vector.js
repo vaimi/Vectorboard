@@ -21,8 +21,14 @@ var messenger = {
     socket: null,
 
     start: function() {
-        var url = "ws://" + location.host + "/vectorsocket";
-        messenger.socket = new WebSocket(url);
+        var url = ""
+        if (location.protocol == 'https:') {
+          url = "wss://" + location.host + "/vectorsocket";
+        } else {
+          url = "ws://" + location.host + "/vectorsocket";
+          
+        }
+        messenger.socket = new WebSocket(url)
         messenger.socket.onmessage = function(event) {
             messenger.handleMessage(JSON.parse(event.data));
         }
