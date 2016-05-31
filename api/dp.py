@@ -64,15 +64,7 @@ class Rest(threading.Thread):
                     rest_server.run(host='0.0.0.0', port=node.port)
                 CORS(rest_server)
             except socket.error, e:
-                if isinstance(e.args, tuple):
-                    if e[0] == errno.EPIPE:
-                        pass
-                    else:
-                        raise e
-                    pass
-                else:
-                    raise e
-                break
+                continue
 
 
 class QueueHandler(threading.Thread):
