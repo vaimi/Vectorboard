@@ -236,7 +236,8 @@ class DistributionHeartbeat(Resource):
         data = request.json
         if data is not None:
             if "host" in data:
-                node.panic(data['host'])
+                if data['host'] != node.host:
+                    node.panic(data['host'])
         else:
             node.last_heartbeat = int(time.time())
         return '', 200
