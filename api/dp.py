@@ -59,9 +59,9 @@ class Rest(threading.Thread):
             try:
                 if node.secure:
                     context = (os.path.join(os.path.dirname(__file__), "../cert.crt"), os.path.join(os.path.dirname(__file__), "../key.key"))
-                    rest_server.run(threading=True, host='0.0.0.0', port=node.port, ssl_context=context)
+                    rest_server.run(threaded=True, host='0.0.0.0', port=node.port, ssl_context=context)
                 else:
-                    rest_server.run(threading=True, host='0.0.0.0', port=node.port)
+                    rest_server.run(threaded=True, host='0.0.0.0', port=node.port)
                 CORS(rest_server)
             except socket.error, e:
                 continue
