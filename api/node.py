@@ -291,8 +291,9 @@ class Node(object):
             ring.post(self.follower + self.heartbeatUrl, json=msg, timeout=self.timeout)
             return True
         except (ring.exceptions.ConnectionError, ring.exceptions.Timeout) as e:
-            self.set_follower(host)
-            self.leader_election("election", 0)
+            if host != self.host:
+                self.set_follower(host)
+                self.leader_election("election", 0)
             return True
 
     def is_connected(self, leaderless=False):
