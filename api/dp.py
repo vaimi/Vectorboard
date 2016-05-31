@@ -55,13 +55,24 @@ class Rest(threading.Thread):
         threading.Thread.__init__(self)
 
     def run(self):
-    	while True:
-	    	if node.secure:
-	    		context = (os.path.join(os.path.dirname(__file__), "../cert.crt"), os.path.join(os.path.dirname(__file__), "../key.key"))
-	    		rest_server.run(host='0.0.0.0', port=node.port, ssl_context=context)
-	    	else:
-	        	rest_server.run(host='0.0.0.0', port=node.port)
-	        CORS(rest_server)
+        while True:
+            try:
+                if node.secure:
+                    context = (os.path.join(os.path.dirname(__file__), "../cert.crt"), os.path.join(os.path.dirname(__file__), "../key.key"))
+                    rest_server.run(host='0.0.0.0', port=node.port, ssl_context=context)
+                else:
+                    rest_server.run(host='0.0.0.0', port=node.port)
+                CORS(rest_server)
+            except socket.error, e:
+                if isinstance(e.args, tuple):
+                    if e[0] == errno.EPIPE:
+                        pass
+                    else:
+                        raise e
+                    pass
+                else:
+                    raise e
+                break
 
 
 class QueueHandler(threading.Thread):
@@ -414,9 +425,9 @@ if __name__ == '__main__':
 
     prefix = ""
     if args.ssl:
-    	prefix = 'https://'
+        prefix = 'https://'
     else:
-    	prefix = 'http://'
+        prefix = 'http://'
     node = Node(host=prefix + args.host + ":" + str(args.restport), port=args.restport)
     node.secure = args.ssl
     logging.info("The client is hosted on %s:%s", args.host, args.socketport)
@@ -436,12 +447,12 @@ if __name__ == '__main__':
     # Setup Tornado
     app = Vectors()
     if node.secure:
-    	app.listen(args.socketport, ssl_options={
-    			"certfile": os.path.join(os.path.dirname(__file__), "../cert.crt"),
-    			"keyfile": os.path.join(os.path.dirname(__file__), "../key.key")
-    		})
+        app.listen(args.socketport, ssl_options={
+                "certfile": os.path.join(os.path.dirname(__file__), "../cert.crt"),
+                "keyfile": os.path.join(os.path.dirname(__file__), "../key.key")
+            })
     else:
-    	app.listen(args.socketport)
+        app.listen(args.socketport)
     try:
         tornado.ioloop.IOLoop.current().start()
     except KeyboardInterrupt:
