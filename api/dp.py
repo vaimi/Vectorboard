@@ -105,17 +105,19 @@ class Heartbeat(threading.Thread):
     def run(self):
         global node
         while True:
-            if node.get_follower() is None:
+            try:
+                if node.get_follower() is None:
+                    continue
+                node.heartbeat()
+                # Make sure we get heartbeats from previous host
+                if node.last_heartbeat is None:
+                    node.last_heartbeat = int(time.time())
+                if int(time.time()) - node.last_heartbeat > HEARTBEAT_TOLERANCE:
+                    node.panic(node.host)
+
+                time.sleep(HEARTBEAT_INTERVAL)
+            except socket.error, e:
                 continue
-            node.heartbeat()
-            # Make sure we get heartbeats from previous host
-            if node.last_heartbeat is None:
-                node.last_heartbeat = int(time.time())
-            if int(time.time()) - node.last_heartbeat > HEARTBEAT_TOLERANCE:
-                node.panic(node.host)
-
-            time.sleep(HEARTBEAT_INTERVAL)
-
 
 class DistributionConnection(Resource):
     """
