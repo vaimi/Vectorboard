@@ -287,6 +287,9 @@ class Node(object):
             return False
         logging.debug("NODE: %s is panicking!", host)
         msg = {"host": host}
+        if host == self.host:
+            logging.debug("NODE: It's me. Everything ok!")
+            retrun True
         try:
             ring.post(self.follower + self.heartbeatUrl, json=msg, timeout=self.timeout)
             return True
