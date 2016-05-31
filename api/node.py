@@ -153,7 +153,7 @@ class Node(object):
         message = {"method": method, "message": leader}
         try:
             ring.post(self.follower + self.messageUrl, json=message, timeout=self.timeout)
-        except ring.exceptions.ConnectionError or ring.exceptions.ReadTimeout:
+        except (ring.exceptions.ConnectionError, ring.exceptions.ReadTimeout) as e:
             logging.error("NODE: Cannot connect host %s. Unsend message: %s", self.follower, message)
             return False
         except TypeError:
@@ -174,7 +174,7 @@ class Node(object):
             msg = {'method':'propagate', 'message': message}
             try:
                 ring.post(self.follower + self.messageUrl, json=msg, timeout=self.timeout)
-            except ring.exceptions.ConnectionError or ring.exceptions.ReadTimeout:
+            except (ring.exceptions.ConnectionError, ring.exceptions.ReadTimeout) as e:
                 logging.error("NODE: Cannot connect host %s. Unsend message: %s", self.follower, msg)
                 return False
         # We are leader. Lets persist the message
@@ -191,7 +191,7 @@ class Node(object):
             msg = {'method': 'persistent', 'message': {'id': message_id, 'message': message}}
             try:
                 ring.post(self.follower + self.messageUrl, json=msg, timeout=self.timeout)
-            except ring.exceptions.ConnectionError or ring.exceptions.ReadTimeout:
+            except (ring.exceptions.ConnectionError, ring.exceptions.ReadTimeout) as e:
                 logging.error("NODE: Cannot connect host %s. Unsend message: %s", self.follower, message)
                 return False
         return True
@@ -211,7 +211,7 @@ class Node(object):
         msg = {'method': 'persistent', 'message': {'id': message_id, 'message': message}}
         try:
             ring.post(self.follower + self.messageUrl, json=msg, timeout=self.timeout)
-        except ring.exceptions.ConnectionError or ring.exceptions.ReadTimeout:
+        except (ring.exceptions.ConnectionError, ring.exceptions.ReadTimeout) as e:
             logging.error("NODE: Cannot connect host %s. Unsend message: %s", self.follower, message)
             return False
         return True
@@ -230,7 +230,7 @@ class Node(object):
         message_dictionary = {"host": self.host}
         try:
             r = ring.get(target_node + self.connectionUrl, message_dictionary, timeout=self.timeout)
-        except ring.exceptions.ConnectionError or ring.exceptions.ReadTimeout:
+        except (ring.exceptions.ConnectionError, ring.exceptions.ReadTimeout) as e:
             logging.error("NODE: Cannot connect host %s.", target_node)
             return False
         if r.status_code == 200:
@@ -256,7 +256,7 @@ class Node(object):
             message = {"host": leaving_node, "new_host": new_target}
             try:
                 ring.post(self.follower + self.connectionUrl, json=message, timeout=self.timeout)
-            except ring.exceptions.ConnectionError or ring.exceptions.ReadTimeout:
+            except (ring.exceptions.ConnectionError, ring.exceptions.ReadTimeout) as e:
                 logging.error("NODE: Cannot connect host %s. Unsend message: %s", self.follower, message)
                 return False
             return True
@@ -272,7 +272,7 @@ class Node(object):
             logging.debug("NODE: Sending heartbeat to %s", self.follower)
             ring.post(self.follower + self.heartbeatUrl, timeout=self.timeout)
             return True
-        except ring.exceptions.ConnectionError or ring.exceptions.ReadTimeout:
+        except (ring.exceptions.ConnectionError, ring.exceptions.Timeout) as e:
             logging.error("NODE: Cannot connect host %s.", self.follower)
             return False
 
@@ -290,7 +290,7 @@ class Node(object):
         try:
             ring.post(self.follower + self.heartbeatUrl, json=msg, timeout=self.timeout)
             return True
-        except ring.exceptions.ConnectionError or ring.exceptions.ReadTimeout:
+        except (ring.exceptions.ConnectionError, ring.exceptions.Timeout) as e:
             self.set_follower(host)
             self.leader_election("election", 0)
             return True
@@ -320,7 +320,7 @@ class Node(object):
         logging.debug("NODE: Requesting old messages from %s", self.follower)
         try:
             resp = ring.get(self.follower + self.messageUrl, timeout=self.timeout)
-        except ring.exceptions.ConnectionError or ring.exceptions.ReadTimeout:
+        except (ring.exceptions.ConnectionError, ring.exceptions.ReadTimeout) as e:
             logging.error("NODE: Cannot connect host %s.", self.follower)
             return False
         self.messages = resp.json()
