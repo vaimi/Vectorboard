@@ -1,1 +1,3 @@
-# ds2016
+# Vectorboard
+
+Vectorboard is distributed, vector-based whiteboard. 
